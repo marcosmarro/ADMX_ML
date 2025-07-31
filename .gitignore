@@ -1,0 +1,12 @@
+*.h5
+8bit_Training/
+14bit_Training/
+both_14bit_Training/
+complex_data/
+Denoised_science/
+plots/
+Science/
+Training/
+*.pdf
+*.pth
+__pycache__
