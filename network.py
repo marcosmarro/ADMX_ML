@@ -1,157 +1,12 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import nn, Tensor
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
-from torch.utils.data import dataset
 import math
 
-SEQ_LEN = 40000
+SEQ_LEN = 100000
 
-class DoubleConv(nn.Module):
-
-    def __init__(self, in_channels, out_channels, mid_channels=None):
-        super().__init__()
-        if not mid_channels:
-            mid_channels = out_channels
-        self.double_conv = nn.Sequential(
-            nn.Conv1d(in_channels, mid_channels, kernel_size=9, padding=4,bias=False),
-            nn.BatchNorm1d(mid_channels),
-            nn.LeakyReLU(inplace=True),
-            nn.Conv1d(mid_channels, out_channels, kernel_size=9, padding=4,bias=False),
-            nn.BatchNorm1d(out_channels),
-            nn.LeakyReLU(inplace=True)
-        )
-
-    def forward(self, x):
-        return self.double_conv(x)
-
-
-class Down(nn.Module):
-
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.maxpool_conv = nn.Sequential(
-            nn.MaxPool1d(4),
-            DoubleConv(in_channels, out_channels)
-        )
-
-    def forward(self, x):
-        return self.maxpool_conv(x)
-
-
-class Up(nn.Module):
-
-    def __init__(self, in_channels, out_channels, bilinear=True):
-        super().__init__()
-
-        # if bilinear, use the normal convolutions to reduce the number of channels
-        if bilinear:
-            self.up = nn.Upsample(scale_factor=4, mode='linear', align_corners=True)
-            self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
-        else:
-            self.up = nn.ConvTranspose1d(in_channels, in_channels // 2, kernel_size=2, stride=2)
-            self.conv = DoubleConv(in_channels, out_channels)
-
-    def forward(self, x1, x2):
-        x1 = self.up(x1)
-        # input is CHW
-        diffY = x2.size()[2] - x1.size()[2]
-
-        x1 = F.pad(x1, [diffY // 2, diffY - diffY // 2])
-        # if you have padding issues, see
-        x = torch.cat([x2, x1], dim=1)
-        return self.conv(x)
-
-
-class OutConv(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(OutConv, self).__init__()
-        self.conv = nn.Sequential(
-            torch.nn.Conv1d(in_channels, out_channels, kernel_size=1),
-            # torch.nn.LeakyReLU(),
-            # torch.nn.Conv1d(in_channels, out_channels, kernel_size=1),
-        )
-
-    def forward(self, x):
-        return self.conv(x)
-    
-    
-class PositionalUNet(nn.Module):
-    def __init__(self):
-        super(PositionalUNet, self).__init__()
-        self.bilinear = True
-        
-        multi = 40
-        ADC_channel = 16384 #ABRA ADC Channel
-        Embedding_dim = 32
-
-        self.embedding = nn.Embedding(ADC_channel, Embedding_dim, scale_grad_by_freq=True)
-        self.inc = DoubleConv(Embedding_dim, multi)
-        self.down1 = Down(multi, multi*2)
-        self.down2 = Down(multi*2, multi*4)
-        self.down3 = Down(multi*4, multi*8)
-        factor = 2 if self.bilinear else 1
-        self.down4 = Down(multi*8, multi*16 // factor)
-              
-        self.up1 = Up(multi*16, multi*8 // factor, self.bilinear)
-        self.up2 = Up(multi*8, multi*4 // factor, self.bilinear)
-        self.up3 = Up(multi*4, multi*2 // factor, self.bilinear)
-        self.up4 = Up(multi*2, multi // factor, self.bilinear)
-        self.outc = OutConv(multi // factor, ADC_channel)
-        self.fc_mean = torch.nn.Conv1d(multi*16 // factor, multi*16 // factor,1)
-        self.fc_var = torch.nn.Conv1d(multi*16 // factor, multi*16 // factor,1)
-        
-        self.pe0 = PositionalEncoding(Embedding_dim)
-        self.pe1 = PositionalEncoding(multi)
-        self.pe2 = PositionalEncoding(multi*2)
-        self.pe3 = PositionalEncoding(multi*4)
-        self.pe4 = PositionalEncoding(multi*8)
-        self.pe5 = PositionalEncoding(multi*16//factor)
-        self.pe6 = PositionalEncoding(multi*8// factor,start=multi*4)
-        self.pe7 = PositionalEncoding(multi*4// factor,start=multi*2)
-        self.pe8 = PositionalEncoding(multi*2// factor,start=multi*2)
-        self.pe9 = PositionalEncoding(multi// factor,start=0,factor=1.0)
-        
-    
-    def reparametrize(self, mu,logvar):
-        std = logvar.mul(0.5).exp_()
-        eps = torch.randn_like(mu)
-        return eps.mul(std).add_(mu)
-    
-#     @torchsnooper.snoop()
-    def forward(self, x):
-        '''
-        Input: time series data with dimension (time,) or (batch, time,)
-        IMPORTANT: all values of the tensor must be POSITIVE INTEGER BETWEEN 0 and 255
-        This is to make sure it can go through the embedding layer, for more about embedding, read
-        https://pytorch.org/docs/stable/generated/torch.nn.Embedding.html
-
-        Output: dimension (time, 256) or (batch, time, 256)
-        the last dimension with 256 elements is a "classification dimension", i.e. where should
-        we output the time series value at this given time index.
-
-        This network should be trained with a CrossEntropyLoss:
-        https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html#crossentropyloss
-        '''
-
-        x  = self.pe0(self.embedding(x).transpose(-1,-2))
-        x1 = self.pe1(self.inc(x))
-        x2 = self.pe2(self.down1(x1))
-        x3 = self.pe3(self.down2(x2))
-        x4 = self.pe4(self.down3(x3))
-        x5 = self.pe5(self.down4(x4))
-#         x5 = self.pe5(self.reparametrize(self.fc_mean(x5), self.fc_var(x5)))
-        
-        x = self.up1(x5, x4)
-        x = self.up2(x, x3)
-        x = self.up3(x, x2)
-        x = self.up4(x, x1)
-        output = self.outc(x)
-        
-#         assert 0
-        return output
 
 class FocalLoss1D(nn.Module):
     def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
@@ -188,7 +43,7 @@ class TransformerModel(nn.Module):
         super(TransformerModel, self).__init__()
         
         
-        ADC_channel = 2048 #ABRA ADC Channel
+        ADC_channel = 16384 #ABRA ADC Channel
         Embedding_dim = 32
         self.model_type = 'Transformer'
         self.pos_encoder = PositionalEncoding(Embedding_dim)
@@ -221,6 +76,7 @@ class TransformerModel(nn.Module):
         src = self.pos_encoder(src.permute(1,2,0)).permute(2,0,1) # (batch_size, embedding_dim, seq_len) --> (seq_len, batch_size, embedding_dim)
         output = self.transformer_encoder(src, src_mask) # (seq_len, batch_size, embedding_dim)
         output = self.linear(output).permute(1,2,0) # (batch_size, ntoken, seq_len)
+        # output = output.argmax(dim=1)
         return output
     
 class PositionalEncoding(nn.Module):
@@ -244,7 +100,7 @@ class PositionalEncoding(nn.Module):
         x = self.dropout(x)
         return x
     
-class AE(nn.Module):
+class AutoEncoder(nn.Module):
     def __init__(self, input_size):
         super().__init__()
         
@@ -257,6 +113,7 @@ class AE(nn.Module):
             torch.nn.ReLU(),
             torch.nn.Linear(int(input_size*scale_factor[1]), int(input_size*scale_factor[2])),
         )
+
         self.decoder = torch.nn.Sequential(
             torch.nn.Linear(int(input_size*scale_factor[2]), int(input_size*scale_factor[1])),
             torch.nn.ReLU(),
@@ -266,11 +123,159 @@ class AE(nn.Module):
         )
 
     def forward(self, input_seq):
-        # Encode the input sequence
-        encoder_outputs = self.encoder(input_seq.float())
+        encoded = self.encoder(input_seq.float())
+        decoded = self.decoder(encoded)
 
-        # Decode the encoded sequence
-        decoder_outputs= self.decoder(encoder_outputs)
+        return decoded
 
-        return decoder_outputs
+
+class DCAE(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        # Encoder
+        self.bn = nn.BatchNorm1d(1)
+       
+        self.enc1 = nn.Sequential(
+            nn.Conv1d(1, 128, kernel_size=3, padding=1, padding_mode='reflect'),
+            nn.ReLU(),    
+        )     
+
+        self.pool1 = nn.AvgPool1d(kernel_size=2) # N/2
+
+        self.enc2 = nn.Sequential(
+            nn.Conv1d(128, 64, kernel_size=3, padding=1, padding_mode='reflect'),
+            nn.ReLU(),     
+        )
+
+        self.pool2 = nn.AvgPool1d(kernel_size=2) # N/4
+
+        self.enc3 = nn.Sequential(
+            nn.Conv1d(64, 32, kernel_size=3, padding=1, padding_mode='reflect'),
+            nn.ReLU()
+        )
+
+        # Decoder
+        self.dec1 = nn.Sequential(
+            nn.Conv1d(32, 32, kernel_size=3, padding=1, padding_mode='reflect'),
+            nn.ReLU()
+        )
+        self.up1 = nn.Upsample(scale_factor=2, mode='linear', align_corners=True)
+
+        self.dec2 = nn.Sequential(
+            nn.Conv1d(32 + 64, 64, kernel_size=3, padding=1, padding_mode='reflect'),
+            nn.ReLU()
+        )
+        self.up2 = nn.Upsample(scale_factor=2, mode='linear', align_corners=True)
+
+        self.dec3 = nn.Sequential(
+            nn.Conv1d(64 +128, 128, kernel_size=3, padding=1, padding_mode='reflect'),
+            nn.ReLU()
+        )
+
+        # Dilation
+        self.dilation = nn.Sequential(
+            nn.Conv1d(128, 128, kernel_size=3, padding=2, dilation=2, padding_mode='reflect'),
+            nn.ReLU(),
+            nn.Conv1d(128, 128, kernel_size=3, padding=3, dilation=3, padding_mode='reflect'),
+            nn.ReLU())
+
+        # Final layer
+        self.output_layer = nn.Conv1d(128, 1, kernel_size=1)
+
+    def forward(self, x):
+        x = x.unsqueeze(1)  # (B, 1, N)
+        x = self.bn(x)      # normalizes to mu = 0, std = 1
+
+        # Encoder
+        e1 = self.enc1(x)   # (B, 128, N)
+        p1 = self.pool1(e1) # (B, 128, N/2)
+
+        e2 = self.enc2(p1)  # (B, 64, N/2)
+        p2 = self.pool2(e2) # (B, 64, N/4)
+
+        e3 = self.enc3(p2)  # (B, 32, N/4)
+
+        # Decoder
+        d1 = self.dec1(e3)  # (B, 32, N/4)
+        u1 = self.up1(d1)   # (B, 32, N/2)
+        u1 = torch.cat([u1, e2], dim=1)  # (B, 96, N/2) Skip connection
+
+        d2 = self.dec2(u1)  # (B, 64, N/2)
+        u2 = self.up2(d2)   # (B, 64, N)
+        u2 = torch.cat([u2, e1], dim=1)  # (B, 192, N) Skip connection
+
+        d3 = self.dec3(u2)  # (B, 128, N)
+
+        # Dilation and Output
+        out = self.dilation(d3) # (B, 128, N)
+        out = self.output_layer(out) # (B, 1, N)
+        return out.squeeze(1)  # (B, N)
+
+
+class DoubleConv(nn.Module):
+    """Two 3x3 convolutions with ReLU"""
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv1d(in_ch, out_ch, kernel_size=3, padding=1, padding_mode='reflect'),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(out_ch, out_ch, kernel_size=3, padding=1, padding_mode='reflect'),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        return self.conv(x)
+
+
+class UNet(nn.Module):
+    """UNet neural network from arXiv:1505.04597"""
+    def __init__(self, in_ch=1, in_features=64, out_ch=1, depth=3):
+        super().__init__()
+        
+        self.down = nn.ModuleList()
+        self.up   = nn.ModuleList()
+
+        curr_ch  = in_ch
+        features = in_features
+
+        for _ in range(depth):
+            self.down.append(DoubleConv(curr_ch, features))
+            curr_ch   = features
+            features *= 2
+
+        self.bottleneck = DoubleConv(curr_ch, features)
+
+        curr_ch = features
+
+        for _ in range(depth):
+            features = features // 2
+            self.up.append(nn.Sequential(
+                nn.ConvTranspose1d(in_channels=curr_ch, out_channels=features, kernel_size=2, stride=2),
+                DoubleConv(curr_ch, features)
+            ))
+            curr_ch = features
+
+
+        self.final = nn.Conv1d(in_features, out_ch, kernel_size=1)
+
+    def forward(self, x):
+        
+        skip = []
+
+        for down in self.down:
+            x = down(x)
+            skip.append(x)
+            x = F.max_pool1d(x, 2)
+
+        x    = self.bottleneck(x)
+        skip = skip[::-1]
+
+        for idx, upblock in enumerate(self.up):
+            x = upblock[0](x)
+            x = torch.cat((x, skip[idx]), dim=1)
+            x = upblock[1](x)
     
+        x = self.final(x)
+
+        return x
