@@ -104,17 +104,20 @@ class AutoEncoder(nn.Module):
     def __init__(self, input_size):
         super().__init__()
         
-        scale_factor = [0.1,0.01,0.001]
+        scale_factor = [0.1, 0.01 , 0.001]
 
-        self.encoder = torch.nn.Sequential(
-            torch.nn.Linear(input_size, int(input_size*scale_factor[0])),
-            torch.nn.ReLU(),
-            torch.nn.Linear(int(input_size*scale_factor[0]), int(input_size*scale_factor[1])),
-            torch.nn.ReLU(),
-            torch.nn.Linear(int(input_size*scale_factor[1]), int(input_size*scale_factor[2])),
+        self.encoder = nn.Sequential(
+            nn.Linear(input_size, int(input_size*scale_factor[0])),
+            nn.ReLU(),
+            nn.Dropout1d(.2),
+            nn.Linear(int(input_size*scale_factor[0]), int(input_size*scale_factor[1])),
+            nn.ReLU(),
+            nn.Dropout1d(.2),
+            nn.Linear(int(input_size*scale_factor[1]), int(input_size*scale_factor[2])),
+            nn.ReLU()
         )
 
-        self.decoder = torch.nn.Sequential(
+        self.decoder = nn.Sequential(
             torch.nn.Linear(int(input_size*scale_factor[2]), int(input_size*scale_factor[1])),
             torch.nn.ReLU(),
             torch.nn.Linear(int(input_size*scale_factor[1]), int(input_size*scale_factor[0])),
@@ -256,6 +259,11 @@ class UNet(nn.Module):
             ))
             curr_ch = features
 
+        self.dilation = nn.Sequential(
+            nn.Conv1d(128, 128, kernel_size=3, padding=2, dilation=2, padding_mode='reflect'),
+            nn.ReLU(),
+            nn.Conv1d(128, 128, kernel_size=3, padding=3, dilation=3, padding_mode='reflect'),
+            nn.ReLU())
 
         self.final = nn.Conv1d(in_features, out_ch, kernel_size=1)
 
@@ -266,7 +274,7 @@ class UNet(nn.Module):
         for down in self.down:
             x = down(x)
             skip.append(x)
-            x = F.max_pool1d(x, 2)
+            x = F.avg_pool1d(x, 2)
 
         x    = self.bottleneck(x)
         skip = skip[::-1]

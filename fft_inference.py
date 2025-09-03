@@ -8,7 +8,6 @@ from tqdm import tqdm
 import os
 from pathlib import Path
 import pyfftw
-import matplotlib.pyplot as plt
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -38,8 +37,6 @@ def read_loader(ADMXfile):
     target = np.log1p(target)
     # target = target / maximum
     target = target.reshape(-1, batchsize, input_size)
-
-    
 
     return np.concatenate([train, target], axis=1), maximum
 
@@ -73,12 +70,7 @@ def main():
             input_seq  = input_seq.float().to(DEVICE)
 
             output_seq = model(input_seq).detach().cpu().numpy()
-            # plt.plot(inputarr[0])
-            # plt.plot(output_seq[0])
-            # plt.show()
-            # breakpoint()
             
-
             denoised.append(output_seq.flatten())
             injected.append(targetarr.flatten())
             noise.append(inputarr.flatten())
@@ -87,7 +79,6 @@ def main():
         injected = np.mean(np.array(injected), axis=0) 
         noise    = np.mean(np.array(noise), axis=0) 
         
-
         print(denoised)
 
         with h5py.File(f'Denoised_fft_science/{fname.stem}_denoised_{args.denoising_model}.h5', 'w') as f:
@@ -97,6 +88,7 @@ def main():
 
             f['injected'].attrs['sig_size'] = ADMXfile['injected'].attrs['sig_size']
             f['injected'].attrs['frequency_detune'] = ADMXfile['injected'].attrs['frequency_detune']
+            f['injected'].attrs['scale_factor'] = ADMXfile['injected'].attrs['scale_factor']
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ def read_loader(ADMXfile):
     train  = ADMXfile['input'][:]
     train  = train.reshape(-1, sampling_freq)
     train  = np.abs(pyfftw.interfaces.scipy_fft.rfft(train)[:, 1:]) ** 2
-    # train  = np.log1p(train)
+    train  = np.log1p(train)
     maximum = train.max()
     # train  = train / maximum
     train  = train.reshape(-1, batchsize, input_size)
@@ -37,7 +37,7 @@ def read_loader(ADMXfile):
     target = ADMXfile['injected'][:]
     target = target.reshape(-1, sampling_freq)
     target = np.abs(pyfftw.interfaces.scipy_fft.rfft(target)[:, 1:]) ** 2
-    # target = np.log1p(target) 
+    target = np.log1p(target) 
     # target = target / maximum
     target = target.reshape(-1, batchsize, input_size)
  
