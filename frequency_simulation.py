@@ -1,27 +1,26 @@
 import numpy as np
 import pyfftw
 
-# np.random.seed(42)
-
 
 def transfer_func(f,f_0, Q):
-    factor1 = f_0**2/f**2
-    transferred = 1./((1.-factor1)**2 * Q**2 + factor1)
+    factor1     = f_0**2 / f**2
+    transferred = 1 / ((1 - factor1)**2 * Q**2 + factor1)
     return transferred
     
 
 def f_v_divided_by_v(v):
-    v_solar = 232*1e3#m/s
-    v_0 = 220*1e3#m/s
-    v_escape = 550e3#1e3
-    f_v = 1./(np.sqrt(np.pi)*v_solar*v_0)*np.exp(-((v+v_solar)/v_0)**2)*(np.exp(4*v*v_solar/v_0**2)-1)
+    v_solar  = 232e3 # m/s
+    v_0      = 220e3 # m/s 
+    v_escape = 550e3 # 1e3 
+    f_v = 1 / (np.sqrt(np.pi) * v_solar * v_0) * np.exp(-((v + v_solar) / v_0) ** 2) * (np.exp(4*v*v_solar / v_0**2) - 1) 
+    
     if isinstance(f_v, float):
         if v > v_escape or v <0: f_v = 0
-        return f_v
+        return f_v 
     else:
-        f_v[v>v_escape] = 0
-        f_v[v<=0]=0
-        return f_v
+        # f_v[v > v_escape] = 0
+        f_v[v <= 0] = 0
+        return f_v 
 
 
 def averaged_power(x):
@@ -30,7 +29,7 @@ def averaged_power(x):
 
 
 def f_v(v):
-    return f_v_divided_by_v(v)*v
+    return f_v_divided_by_v(v) * v 
 
 
 def lorentz(x,x0,Q):
@@ -52,8 +51,7 @@ def psd_to_time(psd):
     N_pos = len(psd)
     phase = np.random.rand(N_pos)*2*np.pi 
     print('phase:', phase)
-    ##debug:
-    #phase = 0.
+ 
     voltage = np.sqrt(psd)*np.exp(1j*phase)
     pos_freqs = voltage
     if N_pos % 2 != 0:
@@ -62,15 +60,14 @@ def psd_to_time(psd):
     else:
         #odd N_pos
         X_full = np.concatenate([pos_freqs, pos_freqs[-1:0:-1].conj()])
-    #X_full = np.append(voltage,np.conj(voltage[1:-1][::-1]))
+
     time_series = pyfftw.interfaces.scipy_fftpack.ifft(X_full)
     
     return np.append(time_series, [0])
 
 
-def make_injected(input_len, sig_size, detune):
-    """
-    Creates axion time series signal derived from https://arxiv.org/abs/2408.04696
+def make_injected(input_len, sig_size, detune, scale_factor):
+    """Creates axion time series signal derived from https://arxiv.org/abs/2408.04696.
     """
 
     N_per_sec = int(400e3) # sampling rate ()
@@ -94,8 +91,8 @@ def make_injected(input_len, sig_size, detune):
     E_kinetic = h_plank * vector_freq_up_convert - E_a0 
     E_kinetic[E_kinetic < 0]=0
     velocities = np.sqrt(2 * E_kinetic / m_a)
-    velocities = np.array(velocities.real, dtype=np.float64)
-    vector_psd_signal_part = f_v_divided_by_v(velocities)
+    velocities = np.array(velocities.real, dtype=np.float64) / scale_factor
+    vector_psd_signal_part = f_v_divided_by_v(velocities) * scale_factor ** 2
     normal_factor = sum(f_v(velocities))
     vector_psd_signal_part= vector_psd_signal_part / normal_factor
 

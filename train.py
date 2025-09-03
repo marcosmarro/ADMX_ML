@@ -48,7 +48,7 @@ elif args.denoising_model == "dcae":
     model     = DCAE().to(DEVICE)
     criterion = nn.MSELoss().to(DEVICE)
 elif args.denoising_model == "unet":
-    model     = UNet(depth=2).to(DEVICE)
+    model     = UNet(depth=1).to(DEVICE)
     criterion = nn.SmoothL1Loss().to(DEVICE)
 else:
     raise ValueError

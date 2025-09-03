@@ -28,7 +28,7 @@ def read_loader(ADMXfile):
     max_index = int(4e7)
     train  = train[:max_index].reshape(-1, batchsize, input_size)
     target = target[:max_index].reshape(-1,  batchsize, input_size)
-
+    # breakpoint()
     return np.concatenate([train, target], axis=1)
 
 
@@ -56,7 +56,7 @@ def main():
         raise ValueError
 
     directory = Path(args.data_dir)
-    file_list = list(directory.glob('*.h5'))
+    file_list = sorted(directory.glob('*.h5'))
 
     for fname in tqdm(file_list):
         ADMXfile     = h5py.File(fname,'r')
@@ -69,12 +69,13 @@ def main():
         for i, batch in enumerate(train_loader):
             inputarr, targetarr = (batch[:batchsize], batch[batchsize:])
 
-            input_seq  = torch.from_numpy(inputarr)
-            input_seq  = input_seq.float().to(DEVICE)
-            if args.denoising_model == 'unet':
-                input_seq = input_seq.unsqueeze(1)
+            with torch.inference_mode():
+                input_seq  = torch.from_numpy(inputarr)
+                input_seq  = input_seq.float().to(DEVICE)
+                if args.denoising_model == 'unet':
+                    input_seq = input_seq.unsqueeze(1)
 
-            output_seq = model(input_seq).detach().cpu().numpy()
+                output_seq = model(input_seq).detach().cpu().numpy()
         
             denoised.append(np.round(output_seq.flatten()))
             injected.append(targetarr.flatten())

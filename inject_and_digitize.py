@@ -19,7 +19,7 @@ args = parser.parse_args()
 
 
 def digitize_data(data):
-    'Takes in an array and digitizes it to 16384 values (14-bit)'
+    "Takes in an array and digitizes it to 16384 values (14-bit)"
 
     normalized = (data + 4) / (8)
     digitized = np.clip(normalized, 0, 1)
@@ -29,7 +29,7 @@ def digitize_data(data):
 
 
 def main():
-    '''
+    """
     Runs the script in the following order:
         1. Reads the pure noise .h5 files 
         2. Generates an injected signal
@@ -37,7 +37,7 @@ def main():
         3. Writes a .h5 file with two channels:
             'input': the input signal for training (noise + injected)
             'injected': the injected/target signal for training 
-    '''
+    """
 
     directory = Path(f'D:/Run1D_admx/corrected_data/{args.type}') # Training/Science
     files = sorted(directory.glob('*.h5'))
@@ -50,18 +50,21 @@ def main():
 
     # Signal size of axion and how offset the frequency is from the resonant frequency
     detune   = np.round(np.random.triangular(-9, 0, 9, size=len(files)), decimals=3) * 1e4
-    detune = 0
-    sig_size = np.abs(detune) + 5e5 # 6.3 max + 
-    sig_size = np.linspace(0, 1500, num=len(files), dtype=int)
+    detune   = 0
+    # sig_size = np.linspace(0, 1e3, num=len(files), dtype=int) # 6.3 max + 
+    # sig_size = [1.5e2, 1.5e3, 1.5e4, 1.5e5, 1.5e6]
+    sig_size = 1.5e3
+    scale    = np.linspace(.5, 3, len(files))
 
-    for i, filename in tqdm(enumerate(files[:50])):
+
+    for i, filename in tqdm(enumerate(files[:])):
         raw_noise    = h5py.File(filename, 'r')['Data'][:].real
         raw_noise    = np.append(raw_noise, [0, 0])
-        raw_injected = make_injected(len(raw_noise), sig_size[i], detune)
+        raw_injected = make_injected(len(raw_noise), sig_size, detune, scale_factor=scale[i])
  
         input_data    = digitize_data(raw_noise + raw_injected) 
         injected_data = digitize_data(raw_injected) 
-
+        # # breakpoint()
         # import pyfftw
         # fs = int(400e3)
         # input_data = input_data.reshape(-1, fs)
@@ -81,9 +84,9 @@ def main():
         f.create_dataset('input', data=input_data)
         f.create_dataset('injected', data=injected_data)
 
-        f['injected'].attrs['sig_size'] = sig_size[i]
+        f['injected'].attrs['sig_size'] = sig_size
         f['injected'].attrs['frequency_detune'] = detune
-
+        f['injected'].attrs['scale_factor'] = scale[i]
         print(f'{filename.name} injected')
         
 
