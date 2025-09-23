@@ -1,96 +1,98 @@
 #!/usr/bin/env python3
 
-import numpy as np
-import argparse
-import torch
 import h5py
+import torch
+import pyfftw
+import argparse
+import numpy as np
 from tqdm import tqdm
-import os
 from pathlib import Path
-import matplotlib.pyplot as plt
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-parser = argparse.ArgumentParser(description="Run time series denoising algorithm over the full validation dataset to produce denoised SQUID time series.")
-parser.add_argument('--data_dir', '-d', type=str, default=os.path.join(os.getcwd(),"Data"), help='Directory where the science files are stored (default: current working directory).')
-parser.add_argument('--denoising_model', '-m', type=str, default='dcae', help='Denoising model we would like to train [fcnet/dcae] (Default: dcae).')
+parser = argparse.ArgumentParser(description="Run PSD denoising model over science files.")
+parser.add_argument('--data_dir', '-d', type=str, default='Science/', help='Directory where the science files are stored (default: current working directory).')
+parser.add_argument('--denoising_model', '-m', type=str, default='dae', help='Denoising model we would like to train [unet/dae] (Default: dcae).')
 args = parser.parse_args()
 
-#set number of training batches and input size
-input_size = 40000
-batchsize  = 20 
+
+# set number of training batches and input size
+sampling_freq = int(400e3)
+input_size    = sampling_freq // 2
+batchsize     = 1
 
 
-def read_loader(ADMXfile):
-    train  = np.array(ADMXfile['input']) # - 8191
-    target = np.array(ADMXfile['injected']) # - 8191
+def read_loader(ADMXfile: h5py.File) -> np.ndarray:
+    """Converts time-series data to PSD.
 
-    max_index = int(4e7)
-    train  = train[:max_index].reshape(-1, batchsize, input_size)
-    target = target[:max_index].reshape(-1,  batchsize, input_size)
-    # breakpoint()
-    return np.concatenate([train, target], axis=1)
+    Args:
+        ADMXfile: h5 file containing time-series data.
+
+    Returns:
+        combined: Concatenated PSDs of train and target time-series.
+    """
+    train  = ADMXfile['input'][:]
+    train  = train.reshape(-1, sampling_freq)
+    train  = np.abs(pyfftw.interfaces.scipy_fft.rfft(train)[:, 1:]) ** 2
+    train  = np.log1p(train)
+    train  = train.reshape(-1, batchsize, input_size)
+
+    target = ADMXfile['injected'][:]
+    target = target.reshape(-1, sampling_freq)
+    target = np.abs(pyfftw.interfaces.scipy_fft.rfft(target)[:, 1:]) ** 2
+    target = np.log1p(target) 
+    target = target.reshape(-1, batchsize, input_size)
+    
+    combined = np.concatenate([train, target], axis=1)
+
+    return combined
 
 
-def main():
-    '''
-    Reads in science files, loads selected model, and returns a denoised .h5 file with three channels:
-        'input': the input signal for model to denoise (noise + injected)
-        'injected': the injected/target signal 
-        'denoised': the denoised signal
-    '''
+if args.denoising_model == "dae":
+    model = torch.load(f'DAE.pth', map_location=DEVICE, weights_only=False)
+    model.eval()
+elif args.denoising_model == "unet":
+    model = torch.load(f'UNET.pth', map_location=DEVICE, weights_only=False)
+    model.eval() 			
+else:
+    raise ValueError
 
-    if args.denoising_model == "dcae":
-        model = torch.load(f'DCAE_TS.pth', map_location=DEVICE, weights_only=False)
-        model.eval()
-    elif args.denoising_model == "transformer":
-        model = torch.load(f'Transformer_TS.pth', map_location=DEVICE, weights_only=False)
-        model.eval()
-    elif args.denoising_model == "fcnet":
-        model = torch.load(f'FCNet_TS.pth', map_location=DEVICE, weights_only=False)
-        model.eval()  	
-    elif args.denoising_model == "unet":  
-        model = torch.load(f'UNet_TS.pth', map_location=DEVICE, weights_only=False)
-        model.eval()  
-    else:
-        raise ValueError
 
-    directory = Path(args.data_dir)
-    file_list = sorted(directory.glob('*.h5'))
+directory = Path(args.data_dir)
+file_list = sorted(directory.glob('*.h5'))
 
-    for fname in tqdm(file_list):
-        ADMXfile     = h5py.File(fname,'r')
-        train_loader = read_loader(ADMXfile)
 
-        noise    = []
-        denoised = []
-        injected = []
+for fname in tqdm(file_list[:]):
+    ADMXfile     = h5py.File(fname,'r')
+    train_loader = read_loader(ADMXfile)
+    
+    noise    = []
+    denoised = []
+    injected = []
+    
+    for i, batch in enumerate(train_loader):
+        inputarr, targetarr = (batch[:batchsize], batch[batchsize:])
+
+        input_seq  = torch.from_numpy(inputarr).unsqueeze(1)
+        input_seq  = input_seq.float().to(DEVICE)
+
+        output_seq = model(input_seq).detach().cpu().numpy()
         
-        for i, batch in enumerate(train_loader):
-            inputarr, targetarr = (batch[:batchsize], batch[batchsize:])
+        denoised.append(output_seq.flatten())
+        injected.append(targetarr.flatten())
+        noise.append(inputarr.flatten())
 
-            with torch.inference_mode():
-                input_seq  = torch.from_numpy(inputarr)
-                input_seq  = input_seq.float().to(DEVICE)
-                if args.denoising_model == 'unet':
-                    input_seq = input_seq.unsqueeze(1)
+    denoised = np.mean(np.array(denoised), axis=0) 
+    injected = np.mean(np.array(injected), axis=0) 
+    noise    = np.mean(np.array(noise), axis=0) 
 
-                output_seq = model(input_seq).detach().cpu().numpy()
-        
-            denoised.append(np.round(output_seq.flatten()))
-            injected.append(targetarr.flatten())
-            noise.append(inputarr.flatten())
+    print(denoised)
 
-        denoised = np.concatenate(denoised, axis=0)
-        injected = np.concatenate(injected, axis=0)
-        noise    = np.concatenate(noise, axis=0)
-        print(denoised)
+    with h5py.File(f'Denoised_science/{fname.stem}_denoised_{args.denoising_model}.h5', 'w') as f:
+        f.create_dataset('denoised', data=denoised)
+        f.create_dataset('input', data=noise)
+        f.create_dataset('injected', data=injected)
 
-        with h5py.File(f'Denoised_science/{fname.stem}_denoised_{args.denoising_model}.h5', 'w') as f:
-            f.create_dataset('denoised', data=denoised)
-            f.create_dataset('input', data=noise)
-            f.create_dataset('injected', data=injected)
-
-
-if __name__ == "__main__":
-	main()
+        f['injected'].attrs['sig_size'] = ADMXfile['injected'].attrs['sig_size']
+        f['injected'].attrs['frequency_detune'] = ADMXfile['injected'].attrs['frequency_detune']
+        f['injected'].attrs['scale_factor'] = ADMXfile['injected'].attrs['scale_factor']

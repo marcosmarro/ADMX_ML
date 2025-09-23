@@ -1,4 +1,6 @@
 *.h5
 *.pdf
-*.pth
 **/
+view_data.py
+test.py
+integration.py

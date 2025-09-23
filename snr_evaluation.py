@@ -1,80 +1,103 @@
 #!/usr/bin/env python3
 
-import numpy as np
-import os
-import argparse
 import h5py
-from pathlib import Path
+import argparse
+import numpy as np
 import matplotlib.pyplot as plt
-import pyfftw
+from pathlib import Path
+from scipy.signal import peak_widths, medfilt
 
 parser = argparse.ArgumentParser(description="Evaluate SNR from noise and denoised data")
-parser.add_argument('--data_dir', '-d', type=str, default=os.getcwd(), help='Directory where the training file is stored (default: current working directory).')
-parser.add_argument('--denoising_model', '-m', type=str, default='dcae', help='Denoising model we would like to train [fcnet/dcae/transformer] (Default: dcae).')
+parser.add_argument('--data_dir', '-d', type=str, default='Denoised_science/', help='Directory where the training file is stored (default: current working directory).')
+parser.add_argument('--denoising_model', '-m', type=str, default='dae', help='Denoising model we would like to train [fcnet/dcae] (Default: dcae).')
 args = parser.parse_args()
 
-directory = Path(args.data_dir)
-file_list = list(directory.glob(f'*{args.denoising_model}.h5'))
+
+def get_window(PSD: np.ndarray) -> tuple:
+    """Calculates window to calculate SNR for signal.
+
+    Args:
+        PSD: 1D array of injected PSD data.
+
+    Returns:
+        window: A tuple[peak, left, right] containing:
+            left: index where the left bin of the signal is.
+            right: index where the right bin of the signal is.
+    """
+    PSD = medfilt(PSD)
+
+    # We calculate the window for the injected PSD
+    peak = np.argmax(PSD)
+    _, _, left, right = peak_widths(PSD, [peak], rel_height=0.7, wlen=20001)
+    window = (int(left[0]), int(right[0]))
+
+    return window
 
 
+def get_snr(PSD: np.ndarray, window:tuple) -> float:
+    """Calculates SNR of PSD.
 
-def get_snr(fft, peak = 0):
-    if peak == 0:
-        peak = np.argmax(fft)
+    Args:
+        PSD: 1D array of PSD data.
+        window: A tuple[peak, left, right] containing:
+            left: index where the left bin of the signal is.
+            right: index where the right bin of the signal is.
 
-    left_sig_bin  = 350  # 600 14-bit, 200 tone injection
-    right_sig_bin = 1000
-    noise_bin     = 5000 
+    Returns:
+        SNR: Signal-to-noise ratio of signal.
+    """
+    left_edge  = window[0]
+    right_edge = window[1]
+    noise_bin  = 10000 #5000
     
-    signal = np.mean(fft[peak - left_sig_bin : peak + right_sig_bin + 1])
+    signal = np.mean(PSD[left_edge : right_edge + 1])
 
-    noise  = np.concatenate([fft[peak - noise_bin   : peak - left_sig_bin - 500],
-                             fft[peak + right_sig_bin + 501 : peak + noise_bin + 1]])
+    noise  = np.concatenate([PSD[left_edge - noise_bin : left_edge - 200],
+                             PSD[right_edge + 201      : right_edge + noise_bin + 1]])
     
     mean_noise = np.mean(noise)
     noise_std  = np.std(noise)
-    # breakpoint()
+
     snr = (signal - mean_noise) / noise_std
-   
-    return snr, peak
+    sig.append(signal - mean_noise)
+
+    return snr
 
 
-for filename in file_list:
+directory = Path(args.data_dir)
+file_list = sorted(directory.glob(f'*{args.denoising_model}.h5'))
+
+snr   = []
+snri  = []
+scale = []
+sig   = []
+
+for i, filename in enumerate(file_list[:]):
     f = h5py.File(filename, 'r')
 
-    fs = int(400e3)    
-    noise    = f['input'][:].reshape(-1, fs)
-    denoised = f['denoised'][:].reshape(-1, fs)
-    injected = f['injected'][:].reshape(-1, fs)
+    # Data = log(x + 1), so must do e^(Data) - 1
+    noise    = np.exp(f['input'][:]) - 1 
+    denoised = np.exp(f['denoised'][:]) - 1
+    injected = np.exp(f['injected'][:]) - 1
 
-    noise_fft    = np.abs(pyfftw.interfaces.scipy_fft.rfft(noise)[:, 1:]) ** 2
-    denoised_fft = np.abs(pyfftw.interfaces.scipy_fft.rfft(denoised)[:, 1:]) ** 2
-    injected_fft = np.abs(pyfftw.interfaces.scipy_fft.rfft(injected)[:, 1:]) ** 2
+    scale_factor = (f['injected'].attrs['scale_factor'])
+    scale.append(scale_factor)
+    
+    window = get_window(injected)
 
-    noise_fft = np.mean(noise_fft, axis=0)
-    denoised_fft = np.mean(denoised_fft, axis=0)
-    injected_fft = np.mean(injected_fft, axis=0)
-    # Bins fft into chunks 
-    # chunk = int(1e3)
-    # binned_noise_fft = np.empty(int(len(noise_fft) / chunk))
-    # binned_denoised_fft = np.empty(int(len(noise_fft) / chunk))
-    # binned_injected_fft = np.empty(int(len(noise_fft) / chunk))
-    # for i in range(0, len(binned_noise_fft)):
-    #     binned_noise_fft[i] = np.average(noise_fft[chunk*i : chunk*i+chunk])
-    #     binned_denoised_fft[i] = np.average(denoised_fft[chunk*i : chunk*i+chunk])
-    #     binned_injected_fft[i] = np.average(injected_fft[chunk*i : chunk*i+chunk])
-
-    # Calculate SNR for the input and denoised 
-    peak = injected_fft.argmax()
-    noise_snr, injected_sig = get_snr(noise_fft, peak)
-    denoised_snr = get_snr(denoised_fft, peak)
-    print('Injected frequency:', peak)
+    noise_snr    = get_snr(noise, window)
+    denoised_snr = get_snr(denoised, window)
+    
+    snr.append(noise_snr)
+    snri.append(denoised_snr / noise_snr)
 
     plt.figure()
-    plt.plot(noise_fft, label=f'noise | snr = {noise_snr:.3f}', c='b', alpha=0.5, lw=1)
-    plt.plot(denoised_fft, label=f'denoised | snr = {denoised_snr[0]:.3f}', c='r', alpha=0.5, lw=1)
-    # plt.plot(injected_fft, label=f'injected', alpha=0.5, lw=1)
+    plt.vlines([window[0], window[1]], 1e10, 1e12, lw=0.5, alpha=0.5, colors='r')
+    plt.plot(noise, label=f'noise | snr = {noise_snr:.3f}', c='b', alpha=0.5, lw=1)
+    plt.plot(denoised, label=f'denoised | snr = {denoised_snr:.3f}', c='r', alpha=0.5, lw=1)
     plt.yscale('log')
-    plt.legend(loc='upper left')
+    plt.legend(loc='center left')
     plt.savefig(f'{args.data_dir}/{filename.stem}_FFT.pdf', dpi=300)
     plt.close()
+
+    print(f'Evaluated {filename.stem}')

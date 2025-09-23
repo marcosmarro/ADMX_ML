@@ -1,138 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch import nn, Tensor
-from torch.nn import TransformerEncoder, TransformerEncoderLayer
-import math
-
-SEQ_LEN = 100000
 
 
-class FocalLoss1D(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
-        super(FocalLoss1D, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-    
-    def forward(self, inputs, targets):
-        # Assume inputs and targets are 1D with shape [batch_size, num_classes, length]
-        # inputs are logits and targets are indices of the correct class
-        log_pt = F.log_softmax(inputs, dim=1)
-        pt = torch.exp(log_pt)
-        
-        # convert targets to one-hot encoding
-        targets_one_hot = F.one_hot(targets, num_classes=inputs.shape[1]).permute(0, 2, 1).float()
-        
-        # Calculate Focal Loss
-        alpha_t = self.alpha * targets_one_hot + (1 - self.alpha) * (1 - targets_one_hot)
-        loss = -alpha_t * ((1 - pt) ** self.gamma) * log_pt
-        loss = (targets_one_hot * loss).sum(dim=1)  # only keep loss where targets are not zero
-        
-        if self.reduction == 'mean':
-            return loss.mean()
-        elif self.reduction == 'sum':
-            return loss.sum()
-        else:
-            return loss
-        
-        
-class TransformerModel(nn.Module):
-
-    def __init__(self):
-        super(TransformerModel, self).__init__()
-        
-        
-        ADC_channel = 16384 #ABRA ADC Channel
-        Embedding_dim = 32
-        self.model_type = 'Transformer'
-        self.pos_encoder = PositionalEncoding(Embedding_dim)
-        # d_model, nhead, d_hid, dropout
-        encoder_layers = TransformerEncoderLayer(Embedding_dim, 2, 128, 0.1)
-        self.transformer_encoder = TransformerEncoder(encoder_layers, 2)
-        self.embedding = nn.Embedding(ADC_channel, Embedding_dim, scale_grad_by_freq=True)
-        self.d_model = Embedding_dim
-        self.linear = nn.Linear(Embedding_dim, ADC_channel)
-
-        self.init_weights()
-
-    def init_weights(self) -> None:
-        initrange = 0.1
-        self.embedding.weight.data.uniform_(-initrange, initrange)
-        self.linear.bias.data.zero_()
-        self.linear.weight.data.uniform_(-initrange, initrange)
-#     @torchsnooper.snoop()
-    def forward(self, src: Tensor, src_mask: Tensor = None) -> Tensor:
-        """
-        Arguments:
-            src: Tensor, shape ``[batch_size, seq_len]``
-            src_mask: Tensor, shape ``[batch_size, seq_len]``
-
-        Returns:
-            output Tensor of shape ``[seq_len, batch_size, ntoken]``
-        """
-        src = src.transpose(0,1) # (seq_len, batch_size)
-        src = self.embedding(src) * math.sqrt(self.d_model) # (seq_len, batch_size, embedding_dim)
-        src = self.pos_encoder(src.permute(1,2,0)).permute(2,0,1) # (batch_size, embedding_dim, seq_len) --> (seq_len, batch_size, embedding_dim)
-        output = self.transformer_encoder(src, src_mask) # (seq_len, batch_size, embedding_dim)
-        output = self.linear(output).permute(1,2,0) # (batch_size, ntoken, seq_len)
-        # output = output.argmax(dim=1)
-        return output
-    
-class PositionalEncoding(nn.Module):
-
-    def __init__(self, d_model, start=0, dropout=0.1, max_len=SEQ_LEN,factor=1.0):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-        self.factor = factor
-
-        pe = torch.zeros(max_len, d_model) # (seq_len, embedding_dim)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1) # (seq_len, 1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)) # (1, embedding_dim / 2)
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(1, 2) # (1, seq_len, embedding_dim) --> (1, embedding_dim, seq_len)
-        self.register_buffer('pe', pe) # removes pe as a parameter but still shows in state_dict 
-        self.start = start
-    # @torchsnooper.snoop()
-    def forward(self, x):
-        x = x + self.factor*self.pe[:,:,self.start:(self.start+x.size(2))] # (batch_size, embedding_dim, seq_len)
-        x = self.dropout(x)
-        return x
-    
-class AutoEncoder(nn.Module):
-    def __init__(self, input_size):
-        super().__init__()
-        
-        scale_factor = [0.1, 0.01 , 0.001]
-
-        self.encoder = nn.Sequential(
-            nn.Linear(input_size, int(input_size*scale_factor[0])),
-            nn.ReLU(),
-            nn.Dropout1d(.2),
-            nn.Linear(int(input_size*scale_factor[0]), int(input_size*scale_factor[1])),
-            nn.ReLU(),
-            nn.Dropout1d(.2),
-            nn.Linear(int(input_size*scale_factor[1]), int(input_size*scale_factor[2])),
-            nn.ReLU()
-        )
-
-        self.decoder = nn.Sequential(
-            torch.nn.Linear(int(input_size*scale_factor[2]), int(input_size*scale_factor[1])),
-            torch.nn.ReLU(),
-            torch.nn.Linear(int(input_size*scale_factor[1]), int(input_size*scale_factor[0])),
-            torch.nn.ReLU(),
-            torch.nn.Linear(int(input_size*scale_factor[0]), input_size)
-        )
-
-    def forward(self, input_seq):
-        encoded = self.encoder(input_seq.float())
-        decoded = self.decoder(encoded)
-
-        return decoded
-
-
-class DCAE(nn.Module):
+class DAE(nn.Module):
     def __init__(self):
         super().__init__()
 
@@ -166,13 +37,13 @@ class DCAE(nn.Module):
         self.up1 = nn.Upsample(scale_factor=2, mode='linear', align_corners=True)
 
         self.dec2 = nn.Sequential(
-            nn.Conv1d(32 + 64, 64, kernel_size=3, padding=1, padding_mode='reflect'),
+            nn.Conv1d(32 +64, 64, kernel_size=3, padding=1, padding_mode='reflect'),
             nn.ReLU()
         )
         self.up2 = nn.Upsample(scale_factor=2, mode='linear', align_corners=True)
 
         self.dec3 = nn.Sequential(
-            nn.Conv1d(64 +128, 128, kernel_size=3, padding=1, padding_mode='reflect'),
+            nn.Conv1d(64 + 128, 128, kernel_size=3, padding=1, padding_mode='reflect'),
             nn.ReLU()
         )
 
@@ -181,14 +52,18 @@ class DCAE(nn.Module):
             nn.Conv1d(128, 128, kernel_size=3, padding=2, dilation=2, padding_mode='reflect'),
             nn.ReLU(),
             nn.Conv1d(128, 128, kernel_size=3, padding=3, dilation=3, padding_mode='reflect'),
-            nn.ReLU())
+            nn.ReLU(),
+            nn.Conv1d(128, 128, kernel_size=3, padding=4, dilation=4, padding_mode='reflect'),
+            nn.ReLU(),
+            nn.Conv1d(128, 128, kernel_size=3, padding=8, dilation=8, padding_mode='reflect'),
+            nn.ReLU(),
+        )
 
         # Final layer
         self.output_layer = nn.Conv1d(128, 1, kernel_size=1)
 
     def forward(self, x):
-        x = x.unsqueeze(1)  # (B, 1, N)
-        x = self.bn(x)      # normalizes to mu = 0, std = 1
+        # x = self.bn(x)      # normalizes to mu = 0, std = 1
 
         # Encoder
         e1 = self.enc1(x)   # (B, 128, N)
@@ -213,8 +88,8 @@ class DCAE(nn.Module):
         # Dilation and Output
         out = self.dilation(d3) # (B, 128, N)
         out = self.output_layer(out) # (B, 1, N)
-        return out.squeeze(1)  # (B, N)
-
+        return out  # (B, 1, N)
+    
 
 class DoubleConv(nn.Module):
     """Two 3x3 convolutions with ReLU"""
@@ -270,11 +145,11 @@ class UNet(nn.Module):
     def forward(self, x):
         
         skip = []
-
+        
         for down in self.down:
             x = down(x)
             skip.append(x)
-            x = F.avg_pool1d(x, 2)
+            x = F.max_pool1d(x, 2)
 
         x    = self.bottleneck(x)
         skip = skip[::-1]

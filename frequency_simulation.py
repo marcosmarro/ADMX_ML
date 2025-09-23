@@ -50,7 +50,7 @@ def Gamma2(f,f0,Q,beta):
 def psd_to_time(psd):
     N_pos = len(psd)
     phase = np.random.rand(N_pos)*2*np.pi 
-    print('phase:', phase)
+    #print('phase:', phase)
  
     voltage = np.sqrt(psd)*np.exp(1j*phase)
     pos_freqs = voltage
